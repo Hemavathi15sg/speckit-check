@@ -1,3 +1,4 @@
+
 """
 FlavorHub Search Engine - MONOLITHIC SEARCH MODULE (1103 lines)
 
@@ -62,6 +63,18 @@ from models import Recipe, User, SAMPLE_RECIPES
 import re
 import time
 import json
+import os
+
+# Import new validation module (Feature: 001-search-modular-refactor)
+try:
+    from search import SearchRequest, validate_search_request, ValidationError
+    VALIDATION_MODULE_AVAILABLE = True
+except ImportError:
+    # Fallback if validation module not available
+    VALIDATION_MODULE_AVAILABLE = False
+    SearchRequest = None
+    validate_search_request = None
+    ValidationError = None
 
 
 # =============================================================================
@@ -83,6 +96,10 @@ ENABLE_SEMANTIC_RANKING = False  # Experiment failed, never removed
 USE_LEGACY_FILTERS = False  # Should be deleted
 ENABLE_CACHE = True  # Currently broken (Issue #183)
 CACHE_TTL_SECONDS = 300  # 5 minutes
+
+# NEW: Validation module feature flag (Issue #447 fix)
+# Set USE_NEW_VALIDATION=true in environment to enable gradual rollout
+USE_NEW_VALIDATION = os.getenv("USE_NEW_VALIDATION", "false").lower() == "true"
 
 # Ranking algorithm flags (unclear which is production!)
 RANKING_ALGORITHM = "hybrid_v3"  # Options: basic, weighted_v2, hybrid_v3, ml_v1
@@ -418,33 +435,38 @@ def filter_by_rating(recipes: List[Recipe], min_rating: float) -> List[Recipe]:
 
 
 # ⚠️ THE PRODUCTION BUG IS IN THIS FUNCTION ⚠️
-def filter_by_dietary(recipes: List[Recipe], user: User) -> List[Recipe]:
+def filter_by_dietary(recipes: List[Recipe], user: User, validated_restrictions: Optional[List[str]] = None) -> List[Recipe]:
     """
-    Filter recipes based on user's dietary restrictions.
+    Filter by user's dietary restrictions.
     
-    🔥 LINE 447: THE PRODUCTION BUG! 🔥
+    🔥 BUG LOCATION 🔥 (Issue #447) - NOW FIXED!
+    When user.dietary_restrictions is None (23% of users),
+    the for loop crashed with TypeError: 'NoneType' object is not iterable
     
-    This function assumes user.dietary_restrictions is always a list.
-    However, 23% of users have dietary_restrictions=None (no preferences).
+    FIX: Accept validated_restrictions parameter from validation module.
+    If provided, use it (guaranteed to never be None).
+    Otherwise, fall back to old behavior with null check.
     
-    When None is passed, the iteration fails with:
-    TypeError: 'NoneType' object is not iterable
+    Args:
+        recipes: List of recipes to filter
+        user: User object (for backward compatibility)
+        validated_restrictions: Pre-validated dietary restrictions from validation module
     
-    This bug crashes the search for 1 in 4 users!
-    
-    Root cause: No input validation + API contract violation
-    Quick fix: Add null check
-    Proper fix: Pydantic validation at API boundary
-    
-    Reported: Issue #447 (2 weeks ago)
-    Impact: 23% of search requests fail
-    Workaround: Frontend hardcodes dietary_restrictions=[] (breaks semantics)
+    Returns:
+        Filtered list of recipes
     """
+    # NEW: Use validated restrictions if provided (from validation module)
+    if validated_restrictions is not None:
+        restrictions = validated_restrictions
+    else:
+        # OLD: Fallback to user.dietary_restrictions with null check
+        restrictions = user.dietary_restrictions if user.dietary_restrictions is not None else []
+    
     if DEBUG:
-        print(f"[DEBUG] Filtering by dietary restrictions: {user.dietary_restrictions}")
+        print(f"[DEBUG] Filtering by dietary restrictions: {restrictions}")
     
-    # 🔥 BUG: No null check before iterating! 🔥
-    for restriction in user.dietary_restrictions:  # ← LINE 447: CRASHES IF None!
+    # FIXED: Now safe because restrictions is guaranteed to be a list
+    for restriction in restrictions:
         recipes = [r for r in recipes if restriction in r.dietary_tags]
         
         if DEBUG:
@@ -543,8 +565,10 @@ def apply_all_filters(recipes: List[Recipe], filters: dict, user: User) -> List[
     if DEBUG:
         print(f"[DEBUG]   After rating filter: {len(results)} recipes")
     
-    # 🔥 This is where the crash happens for users with dietary_restrictions=None 🔥
-    results = filter_by_dietary(results, user)
+    # 🔥 FIXED: Pass validated dietary restrictions if available 🔥
+    # Check if we have validated restrictions from the new validation module
+    validated_restrictions = filters.get("validated_dietary_restrictions")
+    results = filter_by_dietary(results, user, validated_restrictions)
     if DEBUG:
         print(f"[DEBUG]   After dietary filter: {len(results)} recipes")
     
@@ -967,8 +991,53 @@ def search_recipes(request_data: dict, user: User) -> dict:
             print(f"[DEBUG] Returned cached result in {elapsed:.3f}s")
         return cached_result
     
-    # Parse request (NO VALIDATION!)
-    filters = parse_search_request(request_data)
+    # Parse request with NEW validation module (if enabled)
+    if USE_NEW_VALIDATION and VALIDATION_MODULE_AVAILABLE:
+        try:
+            if DEBUG:
+                print("[DEBUG] Using NEW validation module (Issue #447 fix)")
+            
+            # Convert request_data dict to SearchRequest dataclass
+            # Type checker can't infer SearchRequest is not None here, but VALIDATION_MODULE_AVAILABLE guarantees it
+            search_request = SearchRequest(  # type: ignore[misc]
+                query=request_data.get("query"),
+                cuisine=request_data.get("cuisine"),
+                dietary_restrictions=request_data.get("dietary_restrictions"),
+                prep_time_max=request_data.get("max_prep_time"),
+                difficulty=request_data.get("difficulty"),
+                min_rating=request_data.get("min_rating"),
+                page=request_data.get("page", 1),
+                page_size=request_data.get("page_size", 50)
+            )
+            
+            # Validate and normalize using validation module
+            validated_input = validate_search_request(search_request, user)  # type: ignore[misc]
+            
+            # Convert validated input to filters dict for backward compatibility
+            filters = {
+                "query": validated_input.query,
+                "dietary_restrictions": validated_input.dietary_restrictions,
+                "validated_dietary_restrictions": validated_input.dietary_restrictions,  # Pass validated version
+                "cuisine": validated_input.cuisine,
+                "max_prep_time": validated_input.prep_time_max,
+                "difficulty": validated_input.difficulty,
+                "min_rating": validated_input.min_rating
+            }
+            
+            if DEBUG:
+                print(f"[DEBUG] Validation successful: {filters}")
+        
+        except Exception as e:
+            # Automatic fallback to legacy validation on error
+            if DEBUG:
+                print(f"[WARN] Validation module failed: {e}")
+                print("[DEBUG] Falling back to legacy parsing")
+            filters = parse_search_request(request_data)
+    else:
+        # Legacy path (NO VALIDATION!)
+        if DEBUG:
+            print("[DEBUG] Using LEGACY parsing (no validation)")
+        filters = parse_search_request(request_data)
     
     # Get database connection (not actually used, but created anyway)
     db_conn = get_database_connection()

@@ -1,0 +1,83 @@
+# Pylint Configuration for FlavorHub Recipe Manager
+# Constitution Principle VI: Quality Standards - code quality enforcement
+
+[MASTER]
+# Python version
+py-version=3.11
+
+# Files to check
+persistent=yes
+load-plugins=
+
+# Ignore patterns
+ignore=CVS,__pycache__,.git
+ignore-patterns=
+
+[MESSAGES CONTROL]
+# Disable specific warnings that conflict with our coding style
+disable=
+    # Allow TODO comments (we track them in issues)
+    fixme,
+    # Allow logging format strings (common Python pattern)
+    logging-fstring-interpolation,
+    # Dataclass frozen=True creates read-only attributes
+    no-member,
+
+[REPORTS]
+# Output format
+output-format=text
+reports=no
+score=yes
+
+# Evaluation expression (target: ≥9.0/10)
+evaluation=10.0 - ((float(5 * error + warning + refactor + convention) / statement) * 10)
+
+[BASIC]
+# Naming conventions
+good-names=i,j,k,ex,_,id
+bad-names=foo,bar,baz,toto,tutu,tata
+
+# Naming styles (snake_case for Python)
+module-naming-style=snake_case
+class-naming-style=PascalCase
+function-naming-style=snake_case
+method-naming-style=snake_case
+const-naming-style=UPPER_CASE
+attr-naming-style=snake_case
+argument-naming-style=snake_case
+variable-naming-style=snake_case
+
+[FORMAT]
+# Maximum line length (Black default)
+max-line-length=100
+
+# Expected format
+indent-string='    '
+indent-after-paren=4
+
+[DESIGN]
+# Complexity metrics
+max-args=8
+max-locals=20
+max-returns=6
+max-branches=15
+max-statements=50
+max-parents=7
+max-attributes=10
+min-public-methods=1
+max-public-methods=20
+
+[SIMILARITIES]
+# Minimum lines similar to trigger warning
+min-similarity-lines=10
+ignore-comments=yes
+ignore-docstrings=yes
+ignore-imports=yes
+
+[TYPECHECK]
+# Ignore missing members on these modules
+ignored-modules=pytest,models
+
+[EXCEPTIONS]
+# Overriding built-in 'Exception' is acceptable for custom exceptions
+overgeneral-exceptions=builtins.Exception

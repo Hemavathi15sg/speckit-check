@@ -4,9 +4,28 @@ Test script to reproduce Issue #447
 This demonstrates the production bug that crashes search
 for users without dietary restrictions.
 """
-from models import User, SAMPLE_USERS
-from search import search_recipes
+import importlib.util
+import sys
+from pathlib import Path
 from uuid import uuid4
+from models import User, SAMPLE_USERS
+
+# Fix Windows encoding issue for emojis
+if sys.platform == "win32":
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')  # type: ignore
+
+# Load search.py directly (workaround for search/ package name collision)
+search_py_path = Path(__file__).parent / "search.py"
+spec = importlib.util.spec_from_file_location("search_legacy", search_py_path)
+if spec is None or spec.loader is None:
+    raise ImportError("Could not load search.py module")
+search_legacy = importlib.util.module_from_spec(spec)
+sys.modules['search_legacy'] = search_legacy
+spec.loader.exec_module(search_legacy)
+
+# Now we can use search_recipes from the loaded module
+search_recipes = search_legacy.search_recipes
 
 
 def test_bug_with_null_dietary():
@@ -114,6 +133,8 @@ def test_working_case():
 
 
 if __name__ == "__main__":
+    import os
+    
     print("="*60)
     print("FlavorHub Issue #447 Reproduction Test")
     print("="*60)
@@ -122,15 +143,27 @@ if __name__ == "__main__":
     print("30% of searches (users without dietary restrictions).")
     print()
     
+    # Check if validation module fix is enabled
+    validation_enabled = os.getenv("USE_NEW_VALIDATION", "false").lower() == "true"
+    
     # Run tests
-    test_working_case()  # This works
-    test_bug_with_null_dietary()  # This crashes
-    test_bug_with_sample_user()  # This also crashes
+    working = test_working_case()  # This works
+    null_test = test_bug_with_null_dietary()  # Fixed with validation module
+    sample_test = test_bug_with_sample_user()  # Fixed with validation module
     
     print("\n" + "="*60)
     print("Summary:")
     print("  ✅ Users WITH dietary preferences: Search works")
-    print("  ❌ Users WITHOUT dietary preferences: Search crashes")
-    print()
-    print("Follow the workshop to fix this using GitHub agents!")
+    
+    if null_test and sample_test:
+        print("  ✅ Users WITHOUT dietary preferences: Search works (FIXED!)")
+        print()
+        if validation_enabled:
+            print("✅ Issue #447 FIXED via validation module (USE_NEW_VALIDATION=true)")
+        else:
+            print("✅ Issue #447 FIXED via inline null check in filter_by_dietary()")
+    else:
+        print("  ❌ Users WITHOUT dietary preferences: Search crashes")
+        print()
+        print("Follow the workshop to fix this using GitHub agents!")
     print("="*60)
