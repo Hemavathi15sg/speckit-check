@@ -34,6 +34,7 @@ from search.constants import (
     MAX_PAGE_SIZE,
     DEFAULT_PAGE_SIZE,
 )
+
 # Configure module logger
 logger = logging.getLogger(__name__)
 def validate_search_request(
@@ -86,13 +87,25 @@ def validate_search_request(
         logger.debug(
             "Validation successful for user_id=%s in %.2fms",
             validated.user_id,
-            duration_ms
+            duration_ms,
+            extra={
+                "event": "validation_success",
+                "user_id": validated.user_id,
+                "duration_ms": duration_ms,
+            },
         )
         return validated
     except ValidationError:
         # Re-raise ValidationError as-is
         duration_ms = (time.perf_counter() - start_time) * 1000
-        logger.warning("Validation failed in %.2fms", duration_ms)
+        logger.warning(
+            "Validation failed in %.2fms",
+            duration_ms,
+            extra={
+                "event": "validation_failure",
+                "duration_ms": duration_ms,
+            },
+        )
         raise
 def _validate_query(query: Optional[str]) -> str:
     """
@@ -117,7 +130,12 @@ def _validate_query(query: Optional[str]) -> str:
         logger.warning(
             "Query truncated from %d to %d characters",
             len(normalized),
-            MAX_QUERY_LENGTH
+            MAX_QUERY_LENGTH,
+            extra={
+                "event": "query_truncated",
+                "original_length": len(normalized),
+                "truncated_length": MAX_QUERY_LENGTH,
+            },
         )
         normalized = normalized[:MAX_QUERY_LENGTH]
     return normalized
