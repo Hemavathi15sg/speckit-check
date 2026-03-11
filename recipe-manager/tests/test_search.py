@@ -1,8 +1,8 @@
 """
 Unit Tests for FlavorHub Search Module
 
-Tests search functionality, including the NULL_DIETARY_BUG reproduction.
-These tests document existing behavior without modifying code.
+Tests the modular search pipeline including the fix for Issue #447
+(NULL_DIETARY_BUG: TypeError when user.dietary_restrictions is None).
 """
 import pytest
 from uuid import uuid4
@@ -12,88 +12,107 @@ from search import search_recipes
 
 class TestSearchRecipes:
     """Test search_recipes functionality"""
-    
+
     def test_search_with_valid_user_and_restrictions(self, sample_user_with_dietary, sample_search_request):
         """Search works for users WITH dietary restrictions"""
         result = search_recipes(sample_search_request, sample_user_with_dietary)
-        
+
         assert isinstance(result, dict)
         assert "total" in result or "recipes" in result or "results" in result
-    
+
     def test_search_returns_dict(self, sample_user_with_dietary, sample_search_request):
         """Search returns a dictionary response"""
         result = search_recipes(sample_search_request, sample_user_with_dietary)
-        
+
         assert isinstance(result, dict)
-    
-    def test_null_dietary_bug_reproduction(self, sample_user_without_dietary, sample_search_request):
+
+    def test_null_dietary_bug_fixed(self, sample_user_without_dietary, sample_search_request):
         """
-        DOCUMENT: NULL_DIETARY_BUG - search crashes for users without dietary restrictions
-        
-        This test reproduces Issue #447:
-        - User.dietary_restrictions is None
-        - search.py line 447 tries: for restriction in user.dietary_restrictions:
-        - Result: TypeError: 'NoneType' object is not iterable
-        
-        Status: KNOWN BUG - to be fixed in Exercise 1
+        FIXED: Issue #447 - search no longer crashes for users without dietary restrictions.
+
+        Previously: user.dietary_restrictions = None caused
+        TypeError: 'NoneType' object is not iterable at line 447.
+
+        Now: validation_module normalises None → [] before filtering,
+        so search completes successfully and returns a valid response.
         """
-        with pytest.raises(TypeError, match="'NoneType' object is not iterable"):
-            search_recipes(sample_search_request, sample_user_without_dietary)
-    
-    def test_null_dietary_bug_with_sample_user(self, sample_search_request):
+        # Must NOT raise TypeError (bug is fixed)
+        result = search_recipes(sample_search_request, sample_user_without_dietary)
+
+        assert isinstance(result, dict)
+        assert "results" in result
+        assert "total" in result
+        assert isinstance(result["results"], list)
+
+    def test_null_dietary_bug_fixed_with_sample_user(self, sample_search_request):
         """
-        DOCUMENT: NULL_DIETARY_BUG occurs with sample users too
-        
-        SAMPLE_USERS[1] (Bob) has dietary_restrictions=None
-        This reproduces the same bug as production
+        FIXED: Issue #447 - SAMPLE_USERS[1] (Bob, dietary_restrictions=None)
+        can now search without errors.
         """
         bob = SAMPLE_USERS[1]
-        
-        # Verify Bob has None dietary restrictions
         assert bob.dietary_restrictions is None
-        
-        # Verify search crashes for Bob
-        with pytest.raises(TypeError, match="'NoneType' object is not iterable"):
-            search_recipes(sample_search_request, bob)
+
+        # Should NOT crash after the fix
+        result = search_recipes(sample_search_request, bob)
+        assert isinstance(result, dict)
+        assert "results" in result
 
 
 class TestSearchInputValidation:
     """Test search input handling"""
-    
+
     def test_search_request_format(self, sample_search_request):
         """Search request has expected fields"""
         assert "query" in sample_search_request
         assert isinstance(sample_search_request["query"], str)
-    
+
     def test_search_accepts_cuisine_filter(self):
         """Search request can include cuisine filter"""
         request = {
             "query": "pasta",
             "cuisine": "Italian"
         }
-        
+
         assert request["cuisine"] == "Italian"
+
+    def test_empty_results_for_unmatched_query(self, sample_user_without_dietary):
+        """Search with no matches returns empty results, not an error"""
+        request = {"query": "xyzabcnonexistent12345"}
+        result = search_recipes(request, sample_user_without_dietary)
+
+        assert isinstance(result, dict)
+        assert "results" in result
+        assert result["results"] == []
+        assert result["total"] == 0
 
 
 class TestSearchBugDocumentation:
-    """Documentation of known issues"""
-    
-    def test_issue_447_affects_23_percent_of_users(self):
+    """Documentation of Issue #447 and its resolution"""
+
+    def test_issue_447_affected_users(self):
         """
-        DOCUMENTED: Issue #447 affects approximately 23% of users
-        
-        Users without dietary preferences have dietary_restrictions=None
-        This causes TypeError when search.py tries to iterate over None
-        
-        Bug location: search.py line 447
-        Stack trace: for restriction in user.dietary_restrictions:
-        Error: TypeError: 'NoneType' object is not iterable
+        DOCUMENTED: Issue #447 previously affected approximately 23% of users.
+
+        Users without dietary preferences had dietary_restrictions=None.
+        This caused TypeError when search.py tried to iterate over None.
+
+        Status: FIXED via validation_module.py (normalises None → []).
         """
-        # This test just documents the issue
         issue_number = 447
         affected_percentage = 23
-        bug_line = 447
-        
         assert issue_number == 447
         assert affected_percentage == 23
-        assert bug_line == 447
+
+    def test_issue_447_fix_via_validation_module(self):
+        """
+        VERIFY FIX: validation_module normalises None → [] for dietary_restrictions.
+        """
+        from search.validation_module import validate_search_request
+        from search.types import SearchRequest
+
+        user = User(uuid4(), "Bob", "bob@example.com", dietary_restrictions=None)
+        request = SearchRequest(query="pasta")
+        validated = validate_search_request(request, user)
+
+        assert validated.dietary_restrictions == []
+        assert validated.dietary_restrictions is not None
