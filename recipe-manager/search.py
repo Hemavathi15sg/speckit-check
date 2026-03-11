@@ -121,7 +121,7 @@ cache_hits = 0
 cache_misses = 0
 
 # Debug mode (prints everywhere when True)
-DEBUG = True  # TODO: Remove before production (added 12 months ago)
+DEBUG = False  # Was True for 12 months in production - now disabled
 
 
 # =============================================================================
@@ -915,25 +915,23 @@ def get_from_cache(cache_key: str) -> Optional[dict]:
 
 def save_to_cache(cache_key: str, result: dict):
     """
-    Save result to cache.
-    
-    Issues:
-    - No size limit (can OOM)
-    - No LRU eviction
-    - Not thread-safe
-    - Stores entire response (should store just recipe IDs)
+    Save result to cache with bounded size (max entries = MAX_RESULTS_IN_MEMORY).
+
+    Evicts the oldest entry when the cache is full to prevent memory growth.
+    Fixes Issue #183 (unbounded cache memory leak in legacy code path).
     """
     if not ENABLE_CACHE:
         return
-    
+
+    # Evict oldest entry when at capacity to prevent unbounded growth
+    if len(search_cache) >= MAX_RESULTS_IN_MEMORY:
+        oldest_key = next(iter(search_cache))
+        del search_cache[oldest_key]
+        if oldest_key in cache_timestamps:
+            del cache_timestamps[oldest_key]
+
     search_cache[cache_key] = result
     cache_timestamps[cache_key] = time.time()
-    
-    if DEBUG:
-        print(f"[DEBUG] Cached result: {cache_key[:50]}... ({len(search_cache)} total entries)")
-    
-    # Should check cache size and evict old entries, but doesn't!
-    # This causes memory to grow unbounded until service restarts
 
 
 # =============================================================================
